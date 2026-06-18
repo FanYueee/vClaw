@@ -24,16 +24,34 @@ mkdir -p "$SKILLS_DIR"
 
 log() { echo "[pull-skills] $*"; }
 
-# Normalise separators (commas -> spaces) and collect the desired repo set.
+# Normalise separators (commas -> spaces).
 raw="${SKILLS_REPOS:-}"
 raw="${raw//,/ }"
 
+# Guard FIRST, before any pruning. An empty/unset SKILLS_REPOS is treated as a
+# no-op: we leave existing checkouts intact rather than nuking every managed
+# skill. This protects against the variable being accidentally cleared or not
+# injected into the container — a missing env var should never silently delete
+# data on the volume. To intentionally remove a skill, drop it from a non-empty
+# SKILLS_REPOS (handled by the prune pass below) or delete it via SFTP.
+if [ -z "${raw// }" ]; then
+  log "SKILLS_REPOS empty — leaving any existing skills untouched."
+  exit 0
+fi
+
+# Collect the desired repo set, keyed by checkout dir name (the repo basename).
 declare -A desired_spec   # name -> "url#ref"
 for spec in $raw; do
   url="${spec%%#*}"
   [ -z "$url" ] && continue
   name="$(basename "$url")"
   name="${name%.git}"
+  # Two different specs that map to the same checkout dir would collide on disk.
+  # Keep the first and warn loudly rather than silently overwriting.
+  if [ -n "${desired_spec[$name]+set}" ] && [ "${desired_spec[$name]}" != "$spec" ]; then
+    log "WARN: duplicate skill name '$name' from differing specs ('${desired_spec[$name]}' vs '$spec') — keeping the first, ignoring the latter."
+    continue
+  fi
   desired_spec["$name"]="$spec"
 done
 
@@ -47,11 +65,6 @@ for d in "$SKILLS_DIR"/*/; do
     rm -rf "$d"
   fi
 done
-
-if [ -z "${raw// }" ]; then
-  log "SKILLS_REPOS empty — no skill repos to sync."
-  exit 0
-fi
 
 status=0
 for name in "${!desired_spec[@]}"; do
@@ -75,9 +88,18 @@ for name in "${!desired_spec[@]}"; do
 
   if [ -d "$dest/.git" ]; then
     log "Updating '$name' ${ref:+(ref: $ref)}..."
+    target=""
     if git -C "$dest" fetch --depth 1 origin "${ref:-HEAD}"; then
-      if ! git -C "$dest" checkout -q --detach FETCH_HEAD; then
-        log "WARN: checkout failed for '$name' (keeping existing checkout)"
+      # Branch/tag/HEAD (or servers that allow fetching a SHA directly).
+      target="FETCH_HEAD"
+    elif [ -n "$ref" ] && git -C "$dest" fetch origin; then
+      # Many servers reject `fetch origin <sha>`; fall back to a full fetch and
+      # resolve the ref (commit SHA, or a tag/branch) by name locally.
+      target="$ref"
+    fi
+    if [ -n "$target" ]; then
+      if ! git -C "$dest" checkout -q --detach "$target"; then
+        log "WARN: checkout of '$target' failed for '$name' (keeping existing checkout)"
         status=1
       fi
     else

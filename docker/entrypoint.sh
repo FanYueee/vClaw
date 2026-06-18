@@ -72,16 +72,23 @@ ensure_plugin_installed() {
 }
 
 # ---------------------------------------------------------------------------
-# 2. Apply env-driven config patch (every boot in managed mode). The patch is
-#    schema-validated and merged recursively, so manual additions under other
-#    keys are preserved. Set OPENCLAW_MANAGED_CONFIG=0 to manage config by hand.
-#    Done BEFORE plugin installs so a misconfiguration (e.g. a channel token
-#    without its owner id) fails fast, before any slow npm download.
+# 2. Generate the env-driven config patch (every boot in managed mode). We
+#    GENERATE here but APPLY in step 2c, after channel plugins are installed —
+#    OpenClaw validates a channel's config against its installed plugin, so the
+#    Discord block must not be patched in before @openclaw/discord exists.
+#    Generation itself is cheap and fails fast on misconfiguration (e.g. a
+#    channel token without its owner id), before any slow npm download. The
+#    patch is schema-validated and merged recursively on apply, so manual
+#    additions under other keys are preserved. Set OPENCLAW_MANAGED_CONFIG=0 to
+#    manage config by hand.
 # ---------------------------------------------------------------------------
+PATCH_FILE=""
 if [ "${OPENCLAW_MANAGED_CONFIG:-1}" = "1" ]; then
-  log "Applying managed config from environment..."
-  if ! node "$EGG_DIR/config-gen.js" | openclaw config patch --stdin; then
-    log "FATAL: failed to apply config patch (see errors above)"
+  log "Generating managed config from environment..."
+  PATCH_FILE="$(mktemp)"
+  if ! node "$EGG_DIR/config-gen.js" > "$PATCH_FILE"; then
+    log "FATAL: failed to generate config patch (see errors above)"
+    rm -f "$PATCH_FILE"
     exit 1
   fi
 else
@@ -89,12 +96,26 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 2b. Install non-bundled channel plugins now that config is valid. Runs while
-#     the gateway is stopped (a running gateway rejects config mutations).
+# 2b. Install non-bundled channel plugins. Runs while the gateway is stopped (a
+#     running gateway rejects config mutations) and BEFORE the config patch is
+#     applied, so a channel block is never written before its plugin exists.
 # ---------------------------------------------------------------------------
 if [ -n "${DISCORD_BOT_TOKEN:-}" ]; then
   ensure_plugin_installed discord "@openclaw/discord" \
     "openclaw-discord-*/node_modules/@openclaw/discord/dist/index.js"
+fi
+
+# ---------------------------------------------------------------------------
+# 2c. Apply the generated patch now that any required plugins are present.
+# ---------------------------------------------------------------------------
+if [ -n "$PATCH_FILE" ]; then
+  log "Applying managed config..."
+  if ! openclaw config patch --stdin < "$PATCH_FILE"; then
+    log "FATAL: failed to apply config patch (see errors above)"
+    rm -f "$PATCH_FILE"
+    exit 1
+  fi
+  rm -f "$PATCH_FILE"
 fi
 
 # ---------------------------------------------------------------------------
