@@ -17,6 +17,23 @@ EGG_DIR="/opt/openclaw-egg"
 log() { echo "[openclaw-egg] $*"; }
 
 # ---------------------------------------------------------------------------
+# 0. Safety preflight on the gateway exposure settings. These env vars are the
+#    same values the egg substitutes into the gateway --bind/--auth flags, so
+#    validating them here catches an unsafe combination before we start.
+# ---------------------------------------------------------------------------
+BIND="${GATEWAY_BIND:-loopback}"
+AUTH="${GATEWAY_AUTH:-none}"
+if [ "$BIND" != "loopback" ] && [ "$AUTH" = "none" ]; then
+  log "FATAL: GATEWAY_BIND='$BIND' exposes the gateway beyond loopback while GATEWAY_AUTH='none'."
+  log "       Set GATEWAY_AUTH=token (with OPENCLAW_GATEWAY_TOKEN) or keep GATEWAY_BIND=loopback."
+  exit 1
+fi
+if [ "$AUTH" = "token" ] && [ -z "${OPENCLAW_GATEWAY_TOKEN:-}" ]; then
+  log "FATAL: GATEWAY_AUTH='token' requires OPENCLAW_GATEWAY_TOKEN to be set."
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
 # 1. Baseline config + workspace (first boot only). --non-interactive needs
 #    --accept-risk to acknowledge the agent's system access.
 # ---------------------------------------------------------------------------
@@ -32,46 +49,52 @@ if [ ! -f "$CONFIG_FILE" ]; then
   fi
 fi
 
-# ---------------------------------------------------------------------------
-# 1b. Install non-bundled channel plugins. Telegram ships bundled, but Discord
-#     (and most others) must be fetched once via `openclaw plugins install`,
-#     which installs into ~/.openclaw/npm on the persistent volume. Must happen
-#     while the gateway is stopped (a running gateway rejects config mutations).
-# ---------------------------------------------------------------------------
 # Install a channel plugin via its npm package, idempotently. Plugins install
-# under ~/.openclaw/npm/projects/<dir-glob> on the persistent volume; checking
-# for that directory is a fast, deterministic "already installed" signal that
-# avoids re-downloading on every restart.
+# under ~/.openclaw/npm/projects/ on the persistent volume. We check for the
+# plugin's actual entry module (not just the project directory) so a partial or
+# failed install is detected and retried instead of being skipped forever.
+# Telegram ships bundled with OpenClaw; Discord (and most others) do not.
 ensure_plugin_installed() {
-  local channel="$1" pkg="$2" dir_glob="$3"
-  if compgen -G "$CONFIG_DIR/npm/projects/$dir_glob" >/dev/null 2>&1; then
+  local channel="$1" pkg="$2" entry_glob="$3"
+  if compgen -G "$CONFIG_DIR/npm/projects/$entry_glob" >/dev/null 2>&1; then
     log "Channel '${channel}' plugin already installed — skipping download."
     return 0
   fi
   log "Installing '${channel}' plugin (${pkg}) — first boot only, downloads from npm..."
   # A trailing "config changed since last load" notice here is benign; the
-  # plugin files still install. We re-apply our config patch below regardless.
+  # plugin files still install.
   openclaw plugins install "$pkg" \
     || log "WARN: '${channel}' plugin install reported an error (continuing)"
+  # Verify the entry module actually landed; warn loudly if not.
+  if ! compgen -G "$CONFIG_DIR/npm/projects/$entry_glob" >/dev/null 2>&1; then
+    log "WARN: '${channel}' plugin entry module not found after install; the channel may not load."
+  fi
 }
-
-if [ -n "${DISCORD_BOT_TOKEN:-}" ]; then
-  ensure_plugin_installed discord "@openclaw/discord" "openclaw-discord-*"
-fi
 
 # ---------------------------------------------------------------------------
 # 2. Apply env-driven config patch (every boot in managed mode). The patch is
 #    schema-validated and merged recursively, so manual additions under other
 #    keys are preserved. Set OPENCLAW_MANAGED_CONFIG=0 to manage config by hand.
+#    Done BEFORE plugin installs so a misconfiguration (e.g. a channel token
+#    without its owner id) fails fast, before any slow npm download.
 # ---------------------------------------------------------------------------
 if [ "${OPENCLAW_MANAGED_CONFIG:-1}" = "1" ]; then
   log "Applying managed config from environment..."
   if ! node "$EGG_DIR/config-gen.js" | openclaw config patch --stdin; then
-    log "FATAL: failed to apply config patch"
+    log "FATAL: failed to apply config patch (see errors above)"
     exit 1
   fi
 else
-  log "OPENCLAW_MANAGED_CONFIG=0 — leaving openclaw.json untouched."
+  log "OPENCLAW_MANAGED_CONFIG=0 — leaving openclaw.json untouched (managing by hand)."
+fi
+
+# ---------------------------------------------------------------------------
+# 2b. Install non-bundled channel plugins now that config is valid. Runs while
+#     the gateway is stopped (a running gateway rejects config mutations).
+# ---------------------------------------------------------------------------
+if [ -n "${DISCORD_BOT_TOKEN:-}" ]; then
+  ensure_plugin_installed discord "@openclaw/discord" \
+    "openclaw-discord-*/node_modules/@openclaw/discord/dist/index.js"
 fi
 
 # ---------------------------------------------------------------------------

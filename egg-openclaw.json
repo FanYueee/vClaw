@@ -33,8 +33,8 @@
             "description": "API key for your model provider (DeepSeek, OpenRouter, OpenAI-compatible, etc.). Stored only in the environment; never written into the config file.",
             "env_variable": "LLM_API_KEY",
             "default_value": "",
-            "user_viewable": true,
-            "user_editable": true,
+            "user_viewable": false,
+            "user_editable": false,
             "rules": "required|string|max:512"
         },
         {
@@ -105,8 +105,8 @@
             "description": "Token from @BotFather. Leave blank to disable the Telegram channel.",
             "env_variable": "TELEGRAM_BOT_TOKEN",
             "default_value": "",
-            "user_viewable": true,
-            "user_editable": true,
+            "user_viewable": false,
+            "user_editable": false,
             "rules": "nullable|string|max:128"
         },
         {
@@ -123,8 +123,8 @@
             "description": "Bot token from the Discord Developer Portal. Requires the Message Content Intent (and Server Members Intent for role allowlists). Leave blank to disable Discord.",
             "env_variable": "DISCORD_BOT_TOKEN",
             "default_value": "",
-            "user_viewable": true,
-            "user_editable": true,
+            "user_viewable": false,
+            "user_editable": false,
             "rules": "nullable|string|max:128"
         },
         {
@@ -156,20 +156,20 @@
         },
         {
             "name": "Gateway Auth Mode",
-            "description": "Auth for the gateway/Control UI. Use 'none' only with bind=loopback. If bind=lan, set 'token' and provide OPENCLAW_GATEWAY_TOKEN.",
+            "description": "Auth for the gateway/Control UI. Use 'none' only with bind=loopback. If bind=lan, set 'token' and provide OPENCLAW_GATEWAY_TOKEN. The container refuses to start on an unsafe combination (non-loopback bind + none).",
             "env_variable": "GATEWAY_AUTH",
             "default_value": "none",
             "user_viewable": true,
             "user_editable": true,
-            "rules": "required|in:none,token,password,trusted-proxy"
+            "rules": "required|in:none,token"
         },
         {
             "name": "Gateway Token",
             "description": "Shared token used when Gateway Auth Mode is 'token' (read as OPENCLAW_GATEWAY_TOKEN). Required to expose the dashboard on a LAN bind.",
             "env_variable": "OPENCLAW_GATEWAY_TOKEN",
             "default_value": "",
-            "user_viewable": true,
-            "user_editable": true,
+            "user_viewable": false,
+            "user_editable": false,
             "rules": "nullable|string|max:256"
         },
         {

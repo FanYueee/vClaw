@@ -4,6 +4,12 @@
  * from environment variables. Piped into `openclaw config patch --stdin`, which
  * validates against the schema and merges recursively.
  *
+ * Patch merge semantics (from `openclaw config patch`): objects merge, arrays
+ * and scalars replace, and `null` DELETES a path. We therefore emit explicit
+ * `null` for every optional key that is not currently requested, so clearing an
+ * env var actually removes stale config (channels, fallbacks, owners, etc.)
+ * rather than leaving previously-applied values behind.
+ *
  * Secrets are NOT written into the patch:
  *   - provider apiKey uses ${LLM_API_KEY} substitution (resolved at config load)
  *   - Telegram bot token comes from the TELEGRAM_BOT_TOKEN env fallback
@@ -19,19 +25,32 @@ const int = (v, d) => {
   return Number.isFinite(n) ? n : d;
 };
 
+const errors = [];
+const warn = (msg) => process.stderr.write(`[config-gen] WARNING: ${msg}\n`);
+const fail = (msg) => {
+  errors.push(msg);
+  process.stderr.write(`[config-gen] ERROR: ${msg}\n`);
+};
+
 // ---- LLM provider (DeepSeek-style OpenAI-compatible endpoint by default) ----
+// This egg defines exactly ONE provider block (LLM_PROVIDER_ID). The model id
+// is taken verbatim from the env — it may itself contain slashes (e.g. an
+// OpenRouter id like "deepseek/deepseek-chat"). The full model ref is always
+// "<providerId>/<modelId>"; we never treat a slash in the model id as a
+// different, undefined provider.
 const providerId = env.LLM_PROVIDER_ID || 'deepseek';
 const baseUrl = env.LLM_BASE_URL || 'https://api.deepseek.com/v1';
 const primaryId = env.MODEL_PRIMARY || 'deepseek-chat';
-const fallbackIds = list(env.MODEL_FALLBACKS);
+const fallbackIds = list(env.MODEL_FALLBACKS).map((m) =>
+  // Tolerate a user accidentally prefixing the model with the provider id.
+  m.startsWith(`${providerId}/`) ? m.slice(providerId.length + 1) : m
+);
 const ctx = int(env.MODEL_CONTEXT_WINDOW, 128000);
 const maxTok = int(env.MODEL_MAX_TOKENS, 8192);
 
-const ref = (id) => (id.includes('/') ? id : `${providerId}/${id}`);
-const localId = (id) => (id.includes('/') ? id.split('/').slice(1).join('/') : id);
+const ref = (modelId) => `${providerId}/${modelId}`;
 
-// One model definition per distinct local model id we reference.
-const modelIds = [...new Set([primaryId, ...fallbackIds].map(localId))];
+const modelIds = [...new Set([primaryId, ...fallbackIds])];
 const modelDefs = modelIds.map((id) => ({
   id,
   name: id,
@@ -43,6 +62,17 @@ const modelDefs = modelIds.map((id) => ({
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 }));
 
+const provider = {
+  baseUrl,
+  apiKey: '${LLM_API_KEY}',
+  api: 'openai-completions',
+  models: modelDefs,
+  // null => delete any previously-set compat block when no longer requested.
+  compat: bool(env.MODEL_REQUIRES_REASONING_CONTENT)
+    ? { requiresReasoningContentOnAssistantMessages: true }
+    : null,
+};
+
 const patch = {
   // Enforce local gateway mode so `openclaw gateway` starts without
   // --allow-unconfigured.
@@ -52,71 +82,66 @@ const patch = {
     defaults: {
       model: {
         primary: ref(primaryId),
-        ...(fallbackIds.length ? { fallbacks: fallbackIds.map(ref) } : {}),
+        // null => delete stale fallbacks when MODEL_FALLBACKS is cleared.
+        fallbacks: fallbackIds.length ? fallbackIds.map(ref) : null,
       },
     },
   },
 
   models: {
     mode: 'merge',
-    providers: {
-      [providerId]: {
-        baseUrl,
-        apiKey: '${LLM_API_KEY}',
-        api: 'openai-completions',
-        models: modelDefs,
-        ...(bool(env.MODEL_REQUIRES_REASONING_CONTENT)
-          ? { compat: { requiresReasoningContentOnAssistantMessages: true } }
-          : {}),
-      },
-    },
+    providers: { [providerId]: provider },
   },
 
-  channels: {},
+  // Default to deletion; each enabled channel overwrites its key below.
+  channels: { telegram: null, discord: null },
 };
 
 // ---- Channels (enabled only when a bot token is present) ----
+// A channel with a bot token but no owner id is a misconfiguration: it would
+// start an allowlist channel that nobody is authorized to use. Fail fast so the
+// operator fixes it instead of running a half-open bot.
 const owners = [];
 
 if (env.TELEGRAM_BOT_TOKEN) {
-  // botToken omitted on purpose: OpenClaw falls back to the TELEGRAM_BOT_TOKEN
-  // env var for the default account. Allowlist avoids interactive pairing.
-  const tg = { enabled: true, dmPolicy: 'allowlist' };
-  if (env.OWNER_TG_ID) {
-    tg.allowFrom = [env.OWNER_TG_ID];
-    owners.push(`telegram:${env.OWNER_TG_ID}`);
+  if (!env.OWNER_TG_ID) {
+    fail('TELEGRAM_BOT_TOKEN is set but OWNER_TG_ID is empty. Set your numeric Telegram user ID (required for the allowlist), or unset the token to disable Telegram.');
   } else {
-    warn('TELEGRAM_BOT_TOKEN set but OWNER_TG_ID is empty — nobody is allowlisted to DM the bot.');
+    // botToken omitted on purpose: OpenClaw falls back to the TELEGRAM_BOT_TOKEN
+    // env var for the default account. Allowlist avoids interactive pairing.
+    patch.channels.telegram = {
+      enabled: true,
+      dmPolicy: 'allowlist',
+      allowFrom: [env.OWNER_TG_ID],
+    };
+    owners.push(`telegram:${env.OWNER_TG_ID}`);
   }
-  patch.channels.telegram = tg;
 }
 
 if (env.DISCORD_BOT_TOKEN) {
-  const dc = {
-    enabled: true,
-    dmPolicy: 'allowlist',
-    token: { source: 'env', provider: 'default', id: 'DISCORD_BOT_TOKEN' },
-  };
-  if (env.OWNER_DISCORD_ID) {
-    dc.allowFrom = [`discord:${env.OWNER_DISCORD_ID}`];
-    owners.push(`discord:${env.OWNER_DISCORD_ID}`);
+  if (!env.OWNER_DISCORD_ID) {
+    fail('DISCORD_BOT_TOKEN is set but OWNER_DISCORD_ID is empty. Set your numeric Discord user ID (required for the allowlist), or unset the token to disable Discord.');
   } else {
-    warn('DISCORD_BOT_TOKEN set but OWNER_DISCORD_ID is empty — nobody is allowlisted to DM the bot.');
+    patch.channels.discord = {
+      enabled: true,
+      dmPolicy: 'allowlist',
+      token: { source: 'env', provider: 'default', id: 'DISCORD_BOT_TOKEN' },
+      allowFrom: [`discord:${env.OWNER_DISCORD_ID}`],
+    };
+    owners.push(`discord:${env.OWNER_DISCORD_ID}`);
   }
-  patch.channels.discord = dc;
 }
 
-if (!patch.channels.telegram && !patch.channels.discord) {
-  warn('No channel enabled: set TELEGRAM_BOT_TOKEN and/or DISCORD_BOT_TOKEN.');
+if (!patch.channels.telegram && !patch.channels.discord && !errors.length) {
+  warn('No channel enabled: set TELEGRAM_BOT_TOKEN and/or DISCORD_BOT_TOKEN (each with its owner ID).');
 }
 
-// Owner-scoped commands require explicit owner identities.
-if (owners.length) {
-  patch.commands = { ownerAllowFrom: owners };
-}
+// Owner-scoped commands: replace with the current owner set, or delete it.
+patch.commands = { ownerAllowFrom: owners.length ? owners : null };
 
-function warn(msg) {
-  process.stderr.write(`[config-gen] WARNING: ${msg}\n`);
+if (errors.length) {
+  process.stderr.write(`[config-gen] Refusing to emit config due to ${errors.length} error(s) above.\n`);
+  process.exit(1);
 }
 
 process.stdout.write(JSON.stringify(patch, null, 2));
