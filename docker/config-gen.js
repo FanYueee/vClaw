@@ -67,6 +67,29 @@ if (!(ctx > 0)) {
 if (!(maxTok > 0)) {
   fail(`MODEL_MAX_TOKENS must be a positive integer (got '${env.MODEL_MAX_TOKENS}').`);
 }
+if (ctx > 0 && maxTok > 0 && maxTok > ctx) {
+  fail(`MODEL_MAX_TOKENS (${maxTok}) must not exceed MODEL_CONTEXT_WINDOW (${ctx}).`);
+}
+// Fallback ids get the same scrutiny as the primary — a bad one would otherwise
+// be written straight into the model list. (primaryId is checked above.)
+for (const fb of fallbackIds) {
+  if (!fb || /[\s\u0000-\u001f]/.test(fb)) {
+    fail(`MODEL_FALLBACKS contains an invalid model id '${fb}' (no empty/whitespace/control-char entries).`);
+  }
+}
+// parseInt() accepts trailing junk ('8192abc' -> 8192, '1e6' -> 1); reject a raw
+// value that is not a clean positive integer so misconfig fails loudly here.
+{
+  const intRe = /^[1-9][0-9]*$/;
+  const cw = env.MODEL_CONTEXT_WINDOW;
+  const mt = env.MODEL_MAX_TOKENS;
+  if (cw != null && cw !== '' && !intRe.test(cw.trim())) {
+    fail(`MODEL_CONTEXT_WINDOW '${cw}' must be a positive integer.`);
+  }
+  if (mt != null && mt !== '' && !intRe.test(mt.trim())) {
+    fail(`MODEL_MAX_TOKENS '${mt}' must be a positive integer.`);
+  }
+}
 
 const ref = (modelId) => `${providerId}/${modelId}`;
 
@@ -93,6 +116,26 @@ const provider = {
     : null,
 };
 
+// When LLM_PROVIDER_ID changes, merge semantics would leave the OLD provider
+// block behind (objects merge; only an explicit null deletes a key). Read the
+// current config best-effort and null out any provider key that isn't the one we
+// manage now — this egg owns exactly one provider. If the file is absent or not
+// plain JSON we simply skip pruning (a stale provider is harmless beyond clutter).
+const providersPatch = { [providerId]: provider };
+try {
+  const fs = require('fs');
+  const cfgPath = `${env.HOME || ''}/.openclaw/openclaw.json`;
+  if (env.HOME && fs.existsSync(cfgPath)) {
+    const existing = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    const existingProviders = (existing && existing.models && existing.models.providers) || {};
+    for (const key of Object.keys(existingProviders)) {
+      if (key !== providerId) providersPatch[key] = null;
+    }
+  }
+} catch (e) {
+  warn(`could not read existing config to prune stale providers (${e.message}); leaving them in place.`);
+}
+
 const patch = {
   // Enforce local gateway mode so `openclaw gateway` starts without
   // --allow-unconfigured.
@@ -110,7 +153,7 @@ const patch = {
 
   models: {
     mode: 'merge',
-    providers: { [providerId]: provider },
+    providers: providersPatch,
   },
 
   // Default to deletion; each enabled channel overwrites its key below.

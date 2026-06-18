@@ -40,6 +40,12 @@ esac
 case "$PORT" in
   ''|*[!0-9]*) log "FATAL: SERVER_PORT='$PORT' is not a positive integer."; exit 1 ;;
 esac
+# Force base-10 ($((10#…)) avoids an octal misparse of a leading zero) and bound
+# to the valid TCP range — a 0 or >65535 port would bind nowhere useful.
+if [ "$((10#$PORT))" -lt 1 ] || [ "$((10#$PORT))" -gt 65535 ]; then
+  log "FATAL: SERVER_PORT='$PORT' is outside the valid 1-65535 TCP port range."
+  exit 1
+fi
 
 if [ "$BIND" != "loopback" ] && [ "$AUTH" = "none" ]; then
   log "FATAL: GATEWAY_BIND='$BIND' exposes the gateway beyond loopback while GATEWAY_AUTH='none'."
@@ -168,19 +174,25 @@ fi
 #    ({{VAR}} -> ${VAR}); fall back to a sane default for plain `docker run`.
 # ---------------------------------------------------------------------------
 if [ -n "${STARTUP:-}" ]; then
+  # Pterodactyl convention: expand {{VAR}} -> ${VAR} and eval the admin-defined
+  # startup line. The variables it references (PORT/BIND/AUTH) are allowlisted in
+  # the preflight above. Word-splitting on the result is intentional — it turns
+  # the line into argv — so this path can only run the egg's startup template.
   CMD=$(eval echo "$(echo "${STARTUP}" | sed -e 's/{{/${/g' -e 's/}}/}/g')")
+  # If $STARTUP referenced an unset variable, the expansion can be empty or just
+  # whitespace; an unquoted `exec` on that would silently succeed and the gateway
+  # would never start. Strip ALL whitespace (space/tab/newline) to detect it.
+  if [ -z "${CMD//[[:space:]]/}" ]; then
+    log "FATAL: \$STARTUP expanded to an empty command — check it and that its {{variables}} are set."
+    exit 1
+  fi
+  log "OpenClaw bootstrap complete — starting gateway."
+  echo ":/home/container\$ ${CMD}"
+  exec ${CMD}
 else
-  CMD="openclaw gateway --port ${PORT} --bind ${BIND} --auth ${AUTH} --verbose"
+  # No $STARTUP (e.g. a plain `docker run`): build argv directly from the
+  # validated values so quoting and word-splitting can never be subverted.
+  log "OpenClaw bootstrap complete — starting gateway."
+  echo ":/home/container\$ openclaw gateway --port ${PORT} --bind ${BIND} --auth ${AUTH} --verbose"
+  exec openclaw gateway --port "$PORT" --bind "$BIND" --auth "$AUTH" --verbose
 fi
-
-# If $STARTUP referenced an unset variable, the command substitution above can
-# yield an empty (or whitespace-only) string; an unquoted `exec` on that would
-# silently succeed and the gateway would never start. Fail loudly instead.
-if [ -z "${CMD// }" ]; then
-  log "FATAL: startup command expanded to empty — check \$STARTUP and that its {{variables}} are set."
-  exit 1
-fi
-
-log "OpenClaw bootstrap complete — starting gateway."
-echo ":/home/container$ ${CMD}"
-exec ${CMD}

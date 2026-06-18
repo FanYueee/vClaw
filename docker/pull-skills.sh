@@ -43,6 +43,8 @@ fi
 declare -A desired_spec   # name -> "url#ref"
 have_specs=0              # flag instead of ${#desired_spec[@]}: expanding an
                           # empty associative array trips `set -u` on some bash.
+parse_errors=0            # set if any entry is rejected — gates the prune pass so
+                          # a single typo can't delete skills not in the survivors.
 for spec in $raw; do
   url="${spec%%#*}"
   [ -z "$url" ] && continue
@@ -54,11 +56,23 @@ for spec in $raw; do
   # a spec such as "--upload-pack=/bin/sh" or "#--option" would be an option
   # injection. Require a real URL and a non-option ref.
   case "$url" in
-    -*) log "WARN: skill repo URL '$url' looks like a git option — ignoring."; continue ;;
+    -*) log "WARN: skill repo URL '$url' looks like a git option — ignoring."; parse_errors=1; continue ;;
   esac
+  # SECURITY: a ref is later passed to `git fetch origin "$ref"`. Beyond a leading
+  # '-' (option), reject git refspec/ref metacharacters so it can't be coerced
+  # into a refspec (src:dst), a range ('..'), reflog syntax ('@{') or a glob.
+  ref_reason=""
   case "$ref" in
-    -*) log "WARN: skill ref '$ref' (for '$url') looks like a git option — ignoring this repo."; continue ;;
+    -*)        ref_reason="looks like a git option" ;;
+    *:*)       ref_reason="contains ':' (refspec syntax)" ;;
+    *..*)      ref_reason="contains '..' (ref range)" ;;
+    *@\{*)     ref_reason="contains '@{' (reflog syntax)" ;;
+    *' '*|*'~'*|*'^'*|*'?'*|*'*'*|*'['*|*'\'*) ref_reason="contains glob/metacharacters" ;;
   esac
+  if [ -n "$ref_reason" ]; then
+    log "WARN: skill ref '$ref' (for '$url') $ref_reason — ignoring this repo."
+    parse_errors=1; continue
+  fi
 
   name="$(basename -- "$url")"
   name="${name%.git}"
@@ -67,12 +81,12 @@ for spec in $raw; do
   # could make us delete the skills directory itself (or its parent). Accept only
   # a single, plain path segment.
   case "$name" in
-    ""|.|..) log "WARN: skill repo URL '$url' yields an unsafe name '$name' — ignoring."; continue ;;
-    */*)     log "WARN: skill repo URL '$url' yields a path-like name '$name' — ignoring."; continue ;;
+    ""|.|..) log "WARN: skill repo URL '$url' yields an unsafe name '$name' — ignoring."; parse_errors=1; continue ;;
+    */*)     log "WARN: skill repo URL '$url' yields a path-like name '$name' — ignoring."; parse_errors=1; continue ;;
   esac
   if [[ ! "$name" =~ ^[A-Za-z0-9._-]+$ ]]; then
     log "WARN: skill name '$name' (from '$url') has unexpected characters — ignoring."
-    continue
+    parse_errors=1; continue
   fi
 
   # Two different specs that map to the same checkout dir would collide on disk.
@@ -95,18 +109,25 @@ if [ "$have_specs" -eq 0 ]; then
   exit 1
 fi
 
-# Prune git-managed skills that are no longer desired. Manual (non-.git) skills
-# are preserved.
-for d in "$SKILLS_DIR"/*/; do
-  [ -d "$d" ] || continue
-  name="$(basename "$d")"
-  if [ -d "$d/.git" ] && [ -z "${desired_spec[$name]+set}" ]; then
-    log "Removing managed skill no longer listed in SKILLS_REPOS: $name"
-    rm -rf "$d"
-  fi
-done
-
 status=0
+
+# Prune git-managed skills that are no longer desired. Manual (non-.git) skills
+# are preserved. SKIP pruning entirely if any entry failed to parse: with an
+# invalid entry dropped, a still-present managed skill could look "no longer
+# listed" and be deleted because of a typo. We keep everything and exit non-zero.
+if [ "$parse_errors" -ne 0 ]; then
+  log "WARN: some SKILLS_REPOS entries were invalid (see warnings) — skipping prune so no skill is deleted by mistake. Fix the entries to re-enable pruning."
+  status=1
+else
+  for d in "$SKILLS_DIR"/*/; do
+    [ -d "$d" ] || continue
+    name="$(basename "$d")"
+    if [ -d "$d/.git" ] && [ -z "${desired_spec[$name]+set}" ]; then
+      log "Removing managed skill no longer listed in SKILLS_REPOS: $name"
+      rm -rf "$d"
+    fi
+  done
+fi
 for name in "${!desired_spec[@]}"; do
   spec="${desired_spec[$name]}"
   url="${spec%%#*}"
@@ -132,9 +153,12 @@ for name in "${!desired_spec[@]}"; do
     if git -C "$dest" fetch --depth 1 origin "${ref:-HEAD}"; then
       # Branch/tag/HEAD (or servers that allow fetching a SHA directly).
       target="FETCH_HEAD"
-    elif [ -n "$ref" ] && git -C "$dest" fetch origin; then
+    elif [ -n "$ref" ] && { git -C "$dest" fetch --unshallow --tags origin 2>/dev/null || git -C "$dest" fetch --tags origin; }; then
       # Many servers reject `fetch origin <sha>`; fall back to a full fetch and
-      # resolve the ref (commit SHA, or a tag/branch) by name locally.
+      # resolve the ref (commit SHA, tag, or branch) locally. Existing checkouts
+      # are usually --depth 1 (shallow), so --unshallow makes an older pinned
+      # commit reachable; it errors on a non-shallow repo, hence the plain
+      # --tags fallback. --tags ensures tag refs are present too.
       target="$ref"
     fi
     if [ -n "$target" ]; then
@@ -157,8 +181,8 @@ for name in "${!desired_spec[@]}"; do
   if [ -n "$ref" ]; then
     if git clone --depth 1 --branch "$ref" -- "$url" "$dest"; then
       :  # branch/tag clone succeeded
-    elif git clone -- "$url" "$dest" && git -C "$dest" checkout -q "$ref"; then
-      :  # fell back to full clone + checkout (handles commit SHAs)
+    elif rm -rf "$dest" && git clone -- "$url" "$dest" && git -C "$dest" checkout -q --detach "$ref"; then
+      :  # cleaned any partial shallow clone, then full clone + checkout (handles SHAs)
     else
       log "WARN: clone failed for '$name'"
       rm -rf "$dest"   # don't leave a partial dir that blocks future boots
