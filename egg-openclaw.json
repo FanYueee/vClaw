@@ -1,0 +1,185 @@
+{
+    "_comment": "OpenClaw on Pterodactyl — headless Gateway with Discord + Telegram and a DeepSeek-style (OpenAI-compatible) model backend. Build/push the image from this repo's Dockerfile and set the docker image below to your registry.",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-06-18T00:00:00+00:00",
+    "name": "OpenClaw",
+    "author": "you@example.com",
+    "description": "Self-hosted OpenClaw personal AI agent. Talks over Discord and Telegram, runs SKILL.md skills, and connects to any OpenAI-compatible LLM (DeepSeek by default). Config is generated headlessly from the variables below.",
+    "features": null,
+    "docker_images": {
+        "OpenClaw (latest)": "ghcr.io/CHANGE-ME/openclaw-pterodactyl:latest"
+    },
+    "file_denylist": [],
+    "startup": "openclaw gateway --port {{SERVER_PORT}} --bind {{GATEWAY_BIND}} --auth {{GATEWAY_AUTH}} --verbose",
+    "config": {
+        "files": "{}",
+        "startup": "{\"done\": \"[gateway] ready\"}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\n# OpenClaw install: the image bakes in OpenClaw itself, so installation only\n# needs to pre-create the persistent directories on the server volume.\nset -e\nmkdir -p /mnt/server/.openclaw/workspace/skills\necho 'OpenClaw volume initialized. Configuration is generated on first boot from the egg variables.'\n",
+            "container": "node:24-bookworm-slim",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "LLM API Key",
+            "description": "API key for your model provider (DeepSeek, OpenRouter, OpenAI-compatible, etc.). Stored only in the environment; never written into the config file.",
+            "env_variable": "LLM_API_KEY",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:512"
+        },
+        {
+            "name": "LLM Provider ID",
+            "description": "Internal id for the provider block (the part before the slash in the model ref). e.g. deepseek, openrouter.",
+            "env_variable": "LLM_PROVIDER_ID",
+            "default_value": "deepseek",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:64"
+        },
+        {
+            "name": "LLM Base URL",
+            "description": "OpenAI-compatible base URL for the provider. DeepSeek: https://api.deepseek.com/v1 | OpenRouter: https://openrouter.ai/api/v1",
+            "env_variable": "LLM_BASE_URL",
+            "default_value": "https://api.deepseek.com/v1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:512"
+        },
+        {
+            "name": "Primary Model",
+            "description": "Model id within the provider. Combined with the provider id as <provider>/<model>. DeepSeek: deepseek-chat or deepseek-reasoner.",
+            "env_variable": "MODEL_PRIMARY",
+            "default_value": "deepseek-chat",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:128"
+        },
+        {
+            "name": "Fallback Models",
+            "description": "Optional comma-separated fallback model ids (provider prefix optional). e.g. deepseek-reasoner",
+            "env_variable": "MODEL_FALLBACKS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:512"
+        },
+        {
+            "name": "Model Context Window",
+            "description": "Context window (tokens) advertised for the model.",
+            "env_variable": "MODEL_CONTEXT_WINDOW",
+            "default_value": "128000",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:1024"
+        },
+        {
+            "name": "Model Max Output Tokens",
+            "description": "Maximum output tokens per response.",
+            "env_variable": "MODEL_MAX_TOKENS",
+            "default_value": "8192",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|min:256"
+        },
+        {
+            "name": "Requires reasoning_content on replay",
+            "description": "Set 1 for backends (some DeepSeek-compatible proxies) that reject requests after reasoning content is stripped from prior assistant messages.",
+            "env_variable": "MODEL_REQUIRES_REASONING_CONTENT",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|in:0,1"
+        },
+        {
+            "name": "Telegram Bot Token",
+            "description": "Token from @BotFather. Leave blank to disable the Telegram channel.",
+            "env_variable": "TELEGRAM_BOT_TOKEN",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:128"
+        },
+        {
+            "name": "Telegram Owner User ID",
+            "description": "Your numeric Telegram user ID (allowlisted to DM the bot, and set as owner). DM the bot and read from.id, or use the Bot API getUpdates.",
+            "env_variable": "OWNER_TG_ID",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:64"
+        },
+        {
+            "name": "Discord Bot Token",
+            "description": "Bot token from the Discord Developer Portal. Requires the Message Content Intent (and Server Members Intent for role allowlists). Leave blank to disable Discord.",
+            "env_variable": "DISCORD_BOT_TOKEN",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:128"
+        },
+        {
+            "name": "Discord Owner User ID",
+            "description": "Your numeric Discord user ID (allowlisted to DM the bot, and set as owner).",
+            "env_variable": "OWNER_DISCORD_ID",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:64"
+        },
+        {
+            "name": "Skill Repositories",
+            "description": "Space- or comma-separated git URLs of skill repos, optionally pinned with #<ref>. Cloned into the workspace skills directory on boot. SECURITY: only use trusted, pinned sources.",
+            "env_variable": "SKILLS_REPOS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:2048"
+        },
+        {
+            "name": "Gateway Bind Mode",
+            "description": "Network exposure for the Control UI / WebSocket gateway. 'loopback' (recommended) keeps it inside the container; chat channels still work since they connect outbound. Use 'lan' only with auth=token to reach the dashboard via the allocated port.",
+            "env_variable": "GATEWAY_BIND",
+            "default_value": "loopback",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|in:loopback,lan,tailnet,auto,custom"
+        },
+        {
+            "name": "Gateway Auth Mode",
+            "description": "Auth for the gateway/Control UI. Use 'none' only with bind=loopback. If bind=lan, set 'token' and provide OPENCLAW_GATEWAY_TOKEN.",
+            "env_variable": "GATEWAY_AUTH",
+            "default_value": "none",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|in:none,token,password,trusted-proxy"
+        },
+        {
+            "name": "Gateway Token",
+            "description": "Shared token used when Gateway Auth Mode is 'token' (read as OPENCLAW_GATEWAY_TOKEN). Required to expose the dashboard on a LAN bind.",
+            "env_variable": "OPENCLAW_GATEWAY_TOKEN",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:256"
+        },
+        {
+            "name": "Managed Config",
+            "description": "When 1 (default), openclaw.json is regenerated from these variables every boot. Set 0 to manage the config by hand via SFTP.",
+            "env_variable": "OPENCLAW_MANAGED_CONFIG",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|in:0,1"
+        }
+    ]
+}

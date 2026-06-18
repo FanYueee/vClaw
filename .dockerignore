@@ -1,0 +1,6 @@
+.git
+.gitignore
+README.md
+egg-openclaw.json
+*.md
+node_modules

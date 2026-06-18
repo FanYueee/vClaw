@@ -1,0 +1,13 @@
+# Local documentation — intentionally not published
+README.md
+
+# Secrets / runtime config (never commit these)
+.env
+*.env
+.env.*
+**/openclaw.json
+**/openclaw.json.bak
+**/.openclaw/
+
+# Node
+node_modules/
