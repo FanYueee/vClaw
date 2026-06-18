@@ -48,6 +48,26 @@ const fallbackIds = list(env.MODEL_FALLBACKS).map((m) =>
 const ctx = int(env.MODEL_CONTEXT_WINDOW, 128000);
 const maxTok = int(env.MODEL_MAX_TOKENS, 8192);
 
+// ---- Validate inputs (defense-in-depth) ----
+// The egg's variable rules already constrain these, but config-gen can also run
+// from a plain `docker run` without that layer. Catch obviously-broken values
+// here so the failure is a clear message rather than a downstream schema error.
+if (!/^[A-Za-z0-9._-]+$/.test(providerId)) {
+  fail(`LLM_PROVIDER_ID '${providerId}' must match [A-Za-z0-9._-]+ (it is a config key and the model-ref prefix).`);
+}
+if (!/^https?:\/\//i.test(baseUrl)) {
+  fail(`LLM_BASE_URL '${baseUrl}' must be an http(s) URL.`);
+}
+if (!primaryId || /[\s\u0000-\u001f]/.test(primaryId)) {
+  fail('MODEL_PRIMARY must be a non-empty model id with no whitespace or control characters.');
+}
+if (!(ctx > 0)) {
+  fail(`MODEL_CONTEXT_WINDOW must be a positive integer (got '${env.MODEL_CONTEXT_WINDOW}').`);
+}
+if (!(maxTok > 0)) {
+  fail(`MODEL_MAX_TOKENS must be a positive integer (got '${env.MODEL_MAX_TOKENS}').`);
+}
+
 const ref = (modelId) => `${providerId}/${modelId}`;
 
 const modelIds = [...new Set([primaryId, ...fallbackIds])];
@@ -104,31 +124,37 @@ const patch = {
 const owners = [];
 
 if (env.TELEGRAM_BOT_TOKEN) {
-  if (!env.OWNER_TG_ID) {
+  const tgOwner = (env.OWNER_TG_ID || '').trim();
+  if (!tgOwner) {
     fail('TELEGRAM_BOT_TOKEN is set but OWNER_TG_ID is empty. Set your numeric Telegram user ID (required for the allowlist), or unset the token to disable Telegram.');
+  } else if (!/^\d+$/.test(tgOwner)) {
+    fail(`OWNER_TG_ID '${env.OWNER_TG_ID}' must be a numeric Telegram user ID (digits only).`);
   } else {
     // botToken omitted on purpose: OpenClaw falls back to the TELEGRAM_BOT_TOKEN
     // env var for the default account. Allowlist avoids interactive pairing.
     patch.channels.telegram = {
       enabled: true,
       dmPolicy: 'allowlist',
-      allowFrom: [env.OWNER_TG_ID],
+      allowFrom: [tgOwner],
     };
-    owners.push(`telegram:${env.OWNER_TG_ID}`);
+    owners.push(`telegram:${tgOwner}`);
   }
 }
 
 if (env.DISCORD_BOT_TOKEN) {
-  if (!env.OWNER_DISCORD_ID) {
+  const dcOwner = (env.OWNER_DISCORD_ID || '').trim();
+  if (!dcOwner) {
     fail('DISCORD_BOT_TOKEN is set but OWNER_DISCORD_ID is empty. Set your numeric Discord user ID (required for the allowlist), or unset the token to disable Discord.');
+  } else if (!/^\d+$/.test(dcOwner)) {
+    fail(`OWNER_DISCORD_ID '${env.OWNER_DISCORD_ID}' must be a numeric Discord user ID (digits only).`);
   } else {
     patch.channels.discord = {
       enabled: true,
       dmPolicy: 'allowlist',
       token: { source: 'env', provider: 'default', id: 'DISCORD_BOT_TOKEN' },
-      allowFrom: [`discord:${env.OWNER_DISCORD_ID}`],
+      allowFrom: [`discord:${dcOwner}`],
     };
-    owners.push(`discord:${env.OWNER_DISCORD_ID}`);
+    owners.push(`discord:${dcOwner}`);
   }
 }
 

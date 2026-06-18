@@ -146,6 +146,15 @@
             "rules": "nullable|string|max:2048"
         },
         {
+            "name": "Skills Required",
+            "description": "When 1, a skill clone/update failure (network down, bad ref, unreachable repo) stops the container from starting instead of booting without those skills. Default 0 keeps the server up and only logs the failures.",
+            "env_variable": "SKILLS_REQUIRED",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|in:0,1"
+        },
+        {
             "name": "Gateway Bind Mode",
             "description": "Network exposure for the Control UI / WebSocket gateway. 'loopback' (recommended) keeps it inside the container; chat channels still work since they connect outbound. Use 'lan' only with auth=token to reach the dashboard via the allocated port.",
             "env_variable": "GATEWAY_BIND",

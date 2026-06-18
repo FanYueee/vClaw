@@ -23,6 +23,24 @@ log() { echo "[openclaw-egg] $*"; }
 # ---------------------------------------------------------------------------
 BIND="${GATEWAY_BIND:-loopback}"
 AUTH="${GATEWAY_AUTH:-none}"
+PORT="${SERVER_PORT:-18789}"
+
+# These values are expanded into the gateway command line (via $STARTUP / the
+# fallback below), so validate them against a strict allowlist here. The egg
+# already constrains them, but a plain `docker run` caller does not get that
+# validation — never let a value with spaces or shell metacharacters reach exec.
+case "$BIND" in
+  loopback|lan|tailnet|auto|custom) : ;;
+  *) log "FATAL: GATEWAY_BIND='$BIND' must be one of loopback|lan|tailnet|auto|custom."; exit 1 ;;
+esac
+case "$AUTH" in
+  none|token) : ;;
+  *) log "FATAL: GATEWAY_AUTH='$AUTH' must be one of none|token."; exit 1 ;;
+esac
+case "$PORT" in
+  ''|*[!0-9]*) log "FATAL: SERVER_PORT='$PORT' is not a positive integer."; exit 1 ;;
+esac
+
 if [ "$BIND" != "loopback" ] && [ "$AUTH" = "none" ]; then
   log "FATAL: GATEWAY_BIND='$BIND' exposes the gateway beyond loopback while GATEWAY_AUTH='none'."
   log "       Set GATEWAY_AUTH=token (with OPENCLAW_GATEWAY_TOKEN) or keep GATEWAY_BIND=loopback."
@@ -64,10 +82,14 @@ ensure_plugin_installed() {
   # A trailing "config changed since last load" notice here is benign; the
   # plugin files still install.
   openclaw plugins install "$pkg" \
-    || log "WARN: '${channel}' plugin install reported an error (continuing)"
-  # Verify the entry module actually landed; warn loudly if not.
+    || log "WARN: '${channel}' plugin install reported an error."
+  # Verify the entry module actually landed. We only get here when the channel's
+  # token is set, so its block is about to be written into the config — a missing
+  # plugin would otherwise surface only as a confusing validate/runtime failure
+  # later. Fail fast with a clear message instead.
   if ! compgen -G "$CONFIG_DIR/npm/projects/$entry_glob" >/dev/null 2>&1; then
-    log "WARN: '${channel}' plugin entry module not found after install; the channel may not load."
+    log "FATAL: '${channel}' plugin entry module not found after install — cannot enable the '${channel}' channel."
+    return 1
   fi
 }
 
@@ -101,8 +123,11 @@ fi
 #     applied, so a channel block is never written before its plugin exists.
 # ---------------------------------------------------------------------------
 if [ -n "${DISCORD_BOT_TOKEN:-}" ]; then
-  ensure_plugin_installed discord "@openclaw/discord" \
-    "openclaw-discord-*/node_modules/@openclaw/discord/dist/index.js"
+  if ! ensure_plugin_installed discord "@openclaw/discord" \
+       "openclaw-discord-*/node_modules/@openclaw/discord/dist/index.js"; then
+    rm -f "$PATCH_FILE"
+    exit 1
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -121,7 +146,13 @@ fi
 # ---------------------------------------------------------------------------
 # 3. Skills: clone/update repos listed in SKILLS_REPOS into workspace/skills.
 # ---------------------------------------------------------------------------
-bash "$EGG_DIR/pull-skills.sh" || log "skill sync reported errors (continuing)"
+if ! bash "$EGG_DIR/pull-skills.sh"; then
+  if [ "${SKILLS_REQUIRED:-0}" = "1" ]; then
+    log "FATAL: skill sync failed and SKILLS_REQUIRED=1 (see the [pull-skills] warnings above)."
+    exit 1
+  fi
+  log "skill sync reported errors (continuing; set SKILLS_REQUIRED=1 to make this fatal)."
+fi
 
 # ---------------------------------------------------------------------------
 # 4. Validate before starting so misconfig fails fast in the console.
@@ -139,7 +170,15 @@ fi
 if [ -n "${STARTUP:-}" ]; then
   CMD=$(eval echo "$(echo "${STARTUP}" | sed -e 's/{{/${/g' -e 's/}}/}/g')")
 else
-  CMD="openclaw gateway --port ${SERVER_PORT:-18789} --bind ${GATEWAY_BIND:-loopback} --auth ${GATEWAY_AUTH:-none} --verbose"
+  CMD="openclaw gateway --port ${PORT} --bind ${BIND} --auth ${AUTH} --verbose"
+fi
+
+# If $STARTUP referenced an unset variable, the command substitution above can
+# yield an empty (or whitespace-only) string; an unquoted `exec` on that would
+# silently succeed and the gateway would never start. Fail loudly instead.
+if [ -z "${CMD// }" ]; then
+  log "FATAL: startup command expanded to empty — check \$STARTUP and that its {{variables}} are set."
+  exit 1
 fi
 
 log "OpenClaw bootstrap complete — starting gateway."
