@@ -39,6 +39,13 @@ RUN npm install -g "openclaw@${OPENCLAW_VERSION}" \
 RUN useradd -m -d /home/container -s /bin/bash container
 ENV USER=container HOME=/home/container
 
+# Disable ANSI colors. Wings attaches a TTY (so OpenClaw would colorize), but it
+# matches the egg's startup-done string by LITERAL substring against the console
+# output. Colorized output splits "[gateway] ready" with escape codes so the
+# match fails and the server is stuck "starting". Plain output keeps the console
+# readable in the panel and lets done-detection work.
+ENV NO_COLOR=1 FORCE_COLOR=0
+
 # Egg helper scripts live OUTSIDE /home/container (which gets shadowed by the
 # Pterodactyl volume mount at runtime).
 COPY docker/ /opt/openclaw-egg/
