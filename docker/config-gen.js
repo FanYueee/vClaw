@@ -32,6 +32,54 @@ const fail = (msg) => {
   process.stderr.write(`[config-gen] ERROR: ${msg}\n`);
 };
 
+const home = env.HOME || '/home/container';
+const configDir = `${home}/.openclaw`;
+const workspace = env.OPENCLAW_WORKSPACE || `${home}/workspace`;
+const managedSkillsDir = env.OPENCLAW_MANAGED_SKILLS_DIR || `${home}/managed-skills`;
+
+// Keep the agent-facing workspace separate from OpenClaw's own config/state.
+// This is an application-layer guard, not a replacement for container/volume
+// isolation: panel/SFTP users can still reach whatever the panel exposes.
+const validateWorkspace = (p) => {
+  if (!p || p[0] !== '/') {
+    fail(`OPENCLAW_WORKSPACE '${p}' must be an absolute path.`);
+    return;
+  }
+  if (/[\u0000-\u001f]/.test(p)) {
+    fail('OPENCLAW_WORKSPACE must not contain control characters.');
+  }
+  if (p.includes('/../') || p.endsWith('/..') || p.includes('/./') || p.endsWith('/.')) {
+    fail(`OPENCLAW_WORKSPACE '${p}' must not contain '.' or '..' path segments.`);
+  }
+  if (p === home || !p.startsWith(`${home}/`)) {
+    fail(`OPENCLAW_WORKSPACE '${p}' must be inside ${home} but not ${home} itself.`);
+  }
+  if (p === configDir || p.startsWith(`${configDir}/`)) {
+    fail(`OPENCLAW_WORKSPACE '${p}' must not point inside ${configDir}; that directory stores OpenClaw config, secrets, logs, and state.`);
+  }
+};
+validateWorkspace(workspace);
+
+const validateManagedSkillsDir = (p) => {
+  if (!p || p[0] !== '/') {
+    fail(`OPENCLAW_MANAGED_SKILLS_DIR '${p}' must be an absolute path.`);
+    return;
+  }
+  if (/[\u0000-\u001f]/.test(p)) {
+    fail('OPENCLAW_MANAGED_SKILLS_DIR must not contain control characters.');
+  }
+  if (p.includes('/../') || p.endsWith('/..') || p.includes('/./') || p.endsWith('/.')) {
+    fail(`OPENCLAW_MANAGED_SKILLS_DIR '${p}' must not contain '.' or '..' path segments.`);
+  }
+  if (p === home || !p.startsWith(`${home}/`)) {
+    fail(`OPENCLAW_MANAGED_SKILLS_DIR '${p}' must be inside ${home} but not ${home} itself.`);
+  }
+  if (p === workspace || p.startsWith(`${workspace}/`)) {
+    fail(`OPENCLAW_MANAGED_SKILLS_DIR '${p}' must not point inside OPENCLAW_WORKSPACE '${workspace}', because Claw can edit the workspace.`);
+  }
+};
+validateManagedSkillsDir(managedSkillsDir);
+
 // ---- LLM provider (DeepSeek-style OpenAI-compatible endpoint by default) ----
 // This egg defines exactly ONE provider block (LLM_PROVIDER_ID). The model id
 // is taken verbatim from the env — it may itself contain slashes (e.g. an
@@ -143,6 +191,7 @@ const patch = {
 
   agents: {
     defaults: {
+      workspace,
       model: {
         primary: ref(primaryId),
         // null => delete stale fallbacks when MODEL_FALLBACKS is cleared.
@@ -154,6 +203,39 @@ const patch = {
   models: {
     mode: 'merge',
     providers: providersPatch,
+  },
+
+  tools: {
+    deny: ['exec', 'process'],
+    // File/edit tools must stay inside agents.defaults.workspace. This blocks
+    // ordinary Claw file operations from touching ~/.openclaw or sibling files
+    // on the Pterodactyl volume.
+    fs: { workspaceOnly: true },
+    exec: {
+      // Shell exec can bypass file-tool guards (`cat ../...`, `rm ../...`), so
+      // keep it disabled until a separate sandbox/allowlist policy is enabled.
+      security: 'deny',
+      ask: 'always',
+      strictInlineEval: true,
+      applyPatch: {
+        enabled: true,
+        workspaceOnly: true,
+      },
+    },
+    elevated: { enabled: false },
+  },
+
+  skills: {
+    load: {
+      extraDirs: [managedSkillsDir],
+      allowSymlinkTargets: [],
+      watch: false,
+    },
+    workshop: {
+      autonomous: { enabled: false },
+      approvalPolicy: 'pending',
+      allowSymlinkTargetWrites: false,
+    },
   },
 
   // Default to deletion; each enabled channel overwrites its key below.

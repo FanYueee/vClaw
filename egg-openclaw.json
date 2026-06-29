@@ -22,7 +22,7 @@
     },
     "scripts": {
         "installation": {
-            "script": "#!/bin/bash\n# OpenClaw install: the image bakes in OpenClaw itself, so installation only\n# needs to pre-create the persistent directories on the server volume.\nset -e\nmkdir -p /mnt/server/.openclaw/workspace/skills\necho 'OpenClaw volume initialized. Configuration is generated on first boot from the egg variables.'\n",
+            "script": "#!/bin/bash\n# OpenClaw install: the image bakes in OpenClaw itself, so installation only\n# needs to pre-create the persistent directories on the server volume.\nset -e\nmkdir -p /mnt/server/workspace /mnt/server/managed-skills\necho 'OpenClaw volume initialized. Configuration is generated on first boot from the egg variables.'\n",
             "container": "node:24-bookworm-slim",
             "entrypoint": "bash"
         }
@@ -153,6 +153,24 @@
             "user_viewable": true,
             "user_editable": true,
             "rules": "required|in:0,1"
+        },
+        {
+            "name": "OpenClaw Workspace",
+            "description": "Directory Claw is allowed to use for user-facing files. The image refuses paths outside /home/container, /home/container itself, and anything inside .openclaw.",
+            "env_variable": "OPENCLAW_WORKSPACE",
+            "default_value": "/home/container/workspace",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": "required|string|max:256"
+        },
+        {
+            "name": "OpenClaw Managed Skills Directory",
+            "description": "Admin-managed skill directory scanned by OpenClaw but kept outside the Claw-editable workspace.",
+            "env_variable": "OPENCLAW_MANAGED_SKILLS_DIR",
+            "default_value": "/home/container/managed-skills",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": "required|string|max:256"
         },
         {
             "name": "Gateway Bind Mode",

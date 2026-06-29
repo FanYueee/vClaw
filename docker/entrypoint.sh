@@ -11,10 +11,63 @@ cd "$HOME"
 
 CONFIG_DIR="$HOME/.openclaw"
 CONFIG_FILE="$CONFIG_DIR/openclaw.json"
-WORKSPACE="$CONFIG_DIR/workspace"
+WORKSPACE="${OPENCLAW_WORKSPACE:-$HOME/workspace}"
+MANAGED_SKILLS_DIR="${OPENCLAW_MANAGED_SKILLS_DIR:-$HOME/managed-skills}"
 EGG_DIR="/opt/openclaw-egg"
 
 log() { echo "[openclaw-egg] $*"; }
+
+validate_workspace_path() {
+  case "$WORKSPACE" in
+    /*) : ;;
+    *) log "FATAL: OPENCLAW_WORKSPACE='$WORKSPACE' must be an absolute path."; exit 1 ;;
+  esac
+  case "$WORKSPACE" in
+    *$'\n'*|*$'\r'*|*$'\t'*)
+      log "FATAL: OPENCLAW_WORKSPACE contains control characters."
+      exit 1
+      ;;
+  esac
+  case "$WORKSPACE" in
+    "$HOME"|"$HOME/"|"$CONFIG_DIR"|"$CONFIG_DIR"/*|*/../*|*/..|*/./*|*/.)
+      log "FATAL: OPENCLAW_WORKSPACE='$WORKSPACE' must be a dedicated directory inside $HOME, outside $CONFIG_DIR, with no '.' or '..' path segments."
+      exit 1
+      ;;
+    "$HOME"/*) : ;;
+    *)
+      log "FATAL: OPENCLAW_WORKSPACE='$WORKSPACE' must be inside $HOME."
+      exit 1
+      ;;
+  esac
+}
+
+validate_managed_skills_path() {
+  case "$MANAGED_SKILLS_DIR" in
+    /*) : ;;
+    *) log "FATAL: OPENCLAW_MANAGED_SKILLS_DIR='$MANAGED_SKILLS_DIR' must be an absolute path."; exit 1 ;;
+  esac
+  case "$MANAGED_SKILLS_DIR" in
+    *$'\n'*|*$'\r'*|*$'\t'*)
+      log "FATAL: OPENCLAW_MANAGED_SKILLS_DIR contains control characters."
+      exit 1
+      ;;
+  esac
+  case "$MANAGED_SKILLS_DIR" in
+    "$HOME"|"$HOME/"|*/../*|*/..|*/./*|*/.)
+      log "FATAL: OPENCLAW_MANAGED_SKILLS_DIR='$MANAGED_SKILLS_DIR' must be a dedicated directory inside $HOME, with no '.' or '..' path segments."
+      exit 1
+      ;;
+    "$WORKSPACE"|"$WORKSPACE"/*)
+      log "FATAL: OPENCLAW_MANAGED_SKILLS_DIR='$MANAGED_SKILLS_DIR' must not be inside OPENCLAW_WORKSPACE='$WORKSPACE'."
+      exit 1
+      ;;
+    "$HOME"/*) : ;;
+    *)
+      log "FATAL: OPENCLAW_MANAGED_SKILLS_DIR='$MANAGED_SKILLS_DIR' must be inside $HOME."
+      exit 1
+      ;;
+  esac
+}
 
 # ---------------------------------------------------------------------------
 # 0. Safety preflight on the gateway exposure settings. These env vars are the
@@ -24,6 +77,10 @@ log() { echo "[openclaw-egg] $*"; }
 BIND="${GATEWAY_BIND:-loopback}"
 AUTH="${GATEWAY_AUTH:-none}"
 PORT="${SERVER_PORT:-18789}"
+validate_workspace_path
+validate_managed_skills_path
+mkdir -p "$WORKSPACE"
+mkdir -p "$MANAGED_SKILLS_DIR"
 
 # These values are expanded into the gateway command line (via $STARTUP / the
 # fallback below), so validate them against a strict allowlist here. The egg

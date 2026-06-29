@@ -6,7 +6,7 @@
 #   SKILLS_REPOS="https://github.com/acme/skill-foo#v1.2.0 https://github.com/acme/skill-bar"
 #
 # Behaviour:
-#   - Cloned repos live at ~/.openclaw/workspace/skills/<repo-name>.
+#   - Cloned repos live at $OPENCLAW_MANAGED_SKILLS_DIR/<repo-name>.
 #   - Repos removed from SKILLS_REPOS are pruned (only git-managed checkouts;
 #     skills uploaded by hand via SFTP have no .git and are left untouched).
 #   - If an existing checkout's origin differs from the configured URL (basename
@@ -19,7 +19,7 @@
 set -uo pipefail
 
 export HOME=/home/container
-SKILLS_DIR="$HOME/.openclaw/workspace/skills"
+SKILLS_DIR="${OPENCLAW_MANAGED_SKILLS_DIR:-$HOME/managed-skills}"
 mkdir -p "$SKILLS_DIR"
 
 log() { echo "[pull-skills] $*"; }
