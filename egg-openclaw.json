@@ -138,7 +138,7 @@
         },
         {
             "name": "Skill Repositories",
-            "description": "Space- or comma-separated git URLs of skill repos, optionally pinned with #<ref>. Cloned into the workspace skills directory on boot. SECURITY: only use trusted, pinned sources.",
+            "description": "Space- or comma-separated git URLs of skill repos, optionally pinned with #<ref>. Cloned into the admin-managed skills directory on boot. SECURITY: only use trusted, pinned sources.",
             "env_variable": "SKILLS_REPOS",
             "default_value": "",
             "user_viewable": true,

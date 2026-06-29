@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sync OpenClaw skill repositories into the workspace skills directory.
+# Sync OpenClaw skill repositories into the managed skills directory.
 #
 # SKILLS_REPOS: whitespace- or comma-separated list of git URLs. Each may be
 # pinned to a ref with a trailing "#<ref>" (branch, tag, or commit), e.g.

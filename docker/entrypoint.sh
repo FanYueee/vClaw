@@ -207,7 +207,7 @@ if [ -n "$PATCH_FILE" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Skills: clone/update repos listed in SKILLS_REPOS into workspace/skills.
+# 3. Skills: clone/update repos listed in SKILLS_REPOS into managed-skills.
 # ---------------------------------------------------------------------------
 if ! bash "$EGG_DIR/pull-skills.sh"; then
   if [ "${SKILLS_REQUIRED:-0}" = "1" ]; then
